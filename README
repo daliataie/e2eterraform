@@ -1,0 +1,176 @@
+#  	download the following software on your local machine:
+- Terraform for (Win, Linux,Mac...etc) and create a new account with your user name and password.
+- Aws command line/ last version matching the terraform version, you can also use the terraform terminal to run your codes.
+	Create a project folder on your local machine.
+	Open visual studio and navigate to the folder you created , use https://registry.terraform.io/providers/hashicorp/aws as a reference for writing your codes, it is better to create a tf file for each cod , it will help in troubleshooting and make sure to save your changes frequently:
+A-	Create tf file for provider details ( AWS, Azure...etc), name, region, access key & secret key for your provider console) ( file name provider.tf)
+provider "aws" {
+  region     = "us-east-1"
+  access_key = "AKIA3CHQPH7BVVS4SKG5"
+  secret_key = "zbMFWGBg4bewaja4DzRDEdkX6DCKbl0EpMYeba1I"
+}
+
+B-  Create tf file for VPC details including cidr block ( file name  VPC.tf)
+resource "aws_vpc" "e2e_vpc" {
+  cidr_block       = "10.0.0.0/16"
+  instance_tenancy = "default"
+  tags = {
+    Name = "vpc"
+  }
+}
+C- Create internet gateway to provide internet access to the public subnet ( file name gateway .tf)
+resource "aws_internet_gateway" "gateway" {
+  vpc_id = aws_vpc.e2e_vpc.id
+  tags = {
+    Name = "vpc"
+  }
+}
+
+
+
+D- Creating 3 subnets (privatesubnet/isolated-private-subnet, publicsubnet/publicsub, and nated subnet/NAT-DB-Subnet) in us-east-1a availability zone ( file name  3 subnets.tf)
+
+#1- privatesubnet/isolated-private-subnet
+Instances launched in this subnet will be able to communicate with instances within VPC, but will not be able to go to the Internet. 
+resource "aws_subnet" "privatesubnet" {
+  vpc_id            = aws_vpc.e2e_vpc.id
+  cidr_block        = "10.0.1.0/24"
+  availability_zone = "us-east-1a"
+  tags = {
+    Name = "isolated-private-subnet"
+  }
+}
+#2-  publicsubnet/publicsub : instances in this subnet will have full access to the internet
+resource "aws_subnet" "publicsubnet" {
+  vpc_id            = aws_vpc.e2e_vpc.id
+  cidr_block        = "10.0.2.0/24"
+  availability_zone = "us-east-1a"
+  tags = {
+    Name = "publicsub"
+  }
+}	
+#3- Nated subnet/NAT-DB-Subnet:
+ Creating  a private subnet to be communicating with any services withing VPC and to go to the internet
+resource "aws_subnet" "nated" {
+  vpc_id            = aws_vpc.e2e_vpc.id
+  cidr_block        = "10.0.3.0/24"
+  availability_zone = "us-east-1a"
+  tags = {
+    Name = "NAT-DB-Subnet"
+  }
+}
+E- Nat gateway and elastic IP: In order for the instances in private subnet to be communicating with any services withing VPC and to go to the internet, we should use a special aws service ( Nat gateway), eip is required to launch NAT gateway , and they all should be created in a public subnet  ( file name  Nat and eip both.tf)
+
+resource "aws_eip" "nat_gw_eip" {
+  vpc = true
+}
+resource "aws_nat_gateway" "gw" {
+  allocation_id = aws_eip.nat_gw_eip.id
+  subnet_id     = aws_subnet.publicsubnet.id
+}
+
+F- Creating a rout table ( file name  route table.tf)
+-	Connecting the route table with the public subnet.
+resource "aws_route_table" "route_table" {
+  vpc_id = aws_vpc.e2e_vpc.id
+  route {
+    cidr_block = "10.1.0.0/16"
+    gateway_id = aws_internet_gateway.gateway.id
+  }
+  tags = {
+    Name = "publicsubnet rout table"
+  }
+}
+resource "aws_route_table_association" "associate_route_publicsubnet" {
+  subnet_id      = aws_subnet.publicsubnet.id
+  route_table_id = aws_route_table.route_table.id
+}
+
+
+
+
+
+-	Connecting the Nat gateway router with the Nat private subnet.
+resource "aws_route_table" "nated" {
+  vpc_id = aws_vpc.e2e_vpc.id
+
+  route {
+    cidr_block     = "0.0.0.0/0"
+    nat_gateway_id = aws_nat_gateway.gw.id
+  }
+  tags = {
+    Name = "Main Route Table for NAT-ed subnet"
+  }
+}
+-	Associate the rout table with the Nat- private subnet 
+
+resource "aws_route_table_association" "nated" {
+  subnet_id      = aws_subnet.nated.id
+  route_table_id = aws_route_table.nated.id
+}
+-	Connecting the route table with the isolated-private subnet.
+resource "aws_route_table" "my_so_private_router" {
+  vpc_id = aws_vpc.e2e_vpc.id
+
+  tags = {
+    Name = "Local Route Table for Isolated Private Subnet"
+  }
+}
+resource "aws_route_table_association" "my_soprivate_table_ass" {
+  subnet_id      = aws_subnet.privatesubnet.id
+  route_table_id = aws_route_table.my_so_private_router.id
+}
+
+
+
+G- Create ec2 instance , getting the ami from the console from any machine we like to create, Linux, ubuntu, Win...etc ( file name  ec2 info.tf)
+resource "aws_instance" "e2e_server" {
+  ami                         = "ami-0b0af3577fe5e3532"
+  instance_type               = "t2.micro"
+  key_name                    = "admin1"
+  vpc_security_group_ids      = [aws_security_group.security_group.id]
+  subnet_id                   = aws_subnet.publicsubnet.id
+  associate_public_ip_address = true
+  tags = {
+    Name = "e2e-server"
+  }
+}
+H- Create security group to allow or stop connections to specific ports, 22...etc or IP”s ( file name  security group.tf)
+resource "aws_security_group" "security_group" {
+  vpc_id = aws_vpc.e2e_vpc.id
+  ingress {
+    description = "ssh"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  tags = {
+    Name = "allow_tls"
+  }
+}
+Terraform commands:
+
+1- Inside your folder , initiate a repository, run terraform init, this will initiate the provider environment.
+2- Run terraform plan to check the infrastructure that is going to be build.
+3- Run terraform apply to build the infrastructure and fix errors.
+4- Destroy your infrastructure , run terraform destroy. 
+If you get no errors, go and check the infrastructure in the aws console and check the ec2 connection through putty or console.
+
+Git commands:
+1- make dir and run git init to create the git repository.
+2- add all tf files to the folder staging area, then run git add --all
+3- Run git commit -m " commit adding files" to save files in the folder.
+4- Inside your github create a repo with a read me file, best is to give the remote repo the same name you created in your local machine , copy the repo http URL.
+5- create a connection between the local and the remote repository by running 
+-	git remote add origin https://github.com/daliataie/test.git
+-	branch -M main
+-	git push -u origin main
+6- Run git push "http......" to push the local repo to remote repo, then go and check the repository in github.
+
